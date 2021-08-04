@@ -73,7 +73,7 @@ func (o *DockerRunOptions) PullImageAndRunContainer(cmd *cobra.Command, args []s
 		cmd.Println(err)
 		return err
 	}
-	cmd.Println(outBytes)
+	cmd.Println(string(outBytes))
 
 	resp, err := cli.ContainerCreate(ctx, &container.Config{
 		Image: imageName,
