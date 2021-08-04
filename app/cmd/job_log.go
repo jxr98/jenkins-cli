@@ -1,138 +1,107 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
-	"github.com/jenkins-zh/jenkins-cli/app/cmd/common"
-	"github.com/jenkins-zh/jenkins-cli/app/i18n"
-	"github.com/jenkins-zh/jenkins-cli/client"
-	"github.com/spf13/cobra"
+	"io/ioutil"
 	"net/http"
-	"strconv"
-	"strings"
-	"time"
+
+	"github.com/docker/docker/api/types"
+	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/client"
+	"github.com/jenkins-zh/jenkins-cli/app/i18n"
+	"github.com/spf13/cobra"
 )
 
-// JobLogOption is the job log option
-type JobLogOption struct {
-	common.WatchOption
-	History       int
-	LogText       string
-	LastBuildID   int
-	LastBuildURL  string
-	NumberOfLines int
-
-	RoundTripper http.RoundTripper
-}
-
-var jobLogOption JobLogOption
-
 func init() {
-	jobCmd.AddCommand(jobLogCmd)
-	jobLogCmd.Flags().IntVarP(&jobLogOption.History, "history", "s", -1,
-		i18n.T("Specific build history of log"))
-	jobLogCmd.Flags().BoolVarP(&jobLogOption.Watch, "watch", "w", false,
-		i18n.T("Watch the job logs"))
-	jobLogCmd.Flags().IntVarP(&jobLogOption.Interval, "interval", "i", 1,
-		i18n.T("Interval of watch"))
-	jobLogCmd.Flags().IntVarP(&jobLogOption.NumberOfLines, "tail", "t", -1,
-		i18n.T("The last number of lines of the log"))
+	rootCmd.AddCommand(dockerRunCmd)
+	dockerRunCmd.Flags().StringVarP(&dockerRunOptions.ImageName, "image-name", "", "",
+		i18n.T("Name of the image in docker hub which contains upgraded jenkins and plugins"))
+	dockerRunCmd.Flags().StringVarP(&dockerRunOptions.IP, "ip", "", "127.0.0.1",
+		i18n.T("The ip address of the computer you want to use"))
+	dockerRunCmd.Flags().StringVarP(&dockerRunOptions.Tag, "tag", "", "latest",
+		i18n.T("The tag of the images"))
+	dockerRunCmd.Flags().IntVarP(&dockerRunOptions.Port, "port", "", 2375,
+		i18n.T("The port to connect"))
 }
 
-var jobLogCmd = &cobra.Command{
-	Use:   "log",
-	Short: i18n.T("Print the job's log of your Jenkins"),
-	Long: i18n.T(`Print the job's log of your Jenkins
-It'll print the log text of the last build if you don't give the build id.`),
-	Args: cobra.MinimumNArgs(1),
-	Example: `jcli job log <jobName> [buildID]
-jcli job log <jobName> --history 1
-jcli job log <jobName> --watch
-jcli job log <jobName> --tail <numberOfLines>`,
-	PreRunE: func(_ *cobra.Command, args []string) (err error) {
-		if len(args) >= 3 && jobLogOption.History == -1 {
-			var history int
-			historyStr := args[1]
-			if history, err = strconv.Atoi(historyStr); err == nil {
-				jobLogOption.History = history
-			} else {
-				err = fmt.Errorf("job history must be a number instead of '%s'", historyStr)
-			}
-		}
-		return
-	},
-	Run: func(cmd *cobra.Command, args []string) {
-		name := args[0]
-
-		jclient := &client.JobClient{
-			JenkinsCore: client.JenkinsCore{
-				RoundTripper: jobLogOption.RoundTripper,
-			},
-		}
-		getCurrentJenkinsAndClientOrDie(&(jclient.JenkinsCore))
-
-		lastBuildID := -1
-		var jobBuild *client.JobBuild
-		var err error
-		for {
-			if jobBuild, err = jclient.GetBuild(name, jobLogOption.History); err == nil {
-				jobLogOption.LastBuildID = jobBuild.Number
-				jobLogOption.LastBuildURL = jobBuild.URL
-			} else {
-				break
-			}
-
-			if lastBuildID != jobLogOption.LastBuildID {
-				lastBuildID = jobLogOption.LastBuildID
-				cmd.Println("Current build number:", jobLogOption.LastBuildID)
-				cmd.Println("Current build url:", jobLogOption.LastBuildURL)
-
-				err = printLog(jclient, cmd, name, jobLogOption.History, 0, jobLogOption.NumberOfLines)
-			}
-
-			if err != nil || !jobLogOption.Watch {
-				break
-			}
-
-			time.Sleep(time.Duration(jobLogOption.Interval) * time.Second)
-		}
-	},
+type DockerRunOptions struct {
+	ImageName string
+	Tag       string
+	IP        string
+	Port      int
 }
 
-func printLog(jclient *client.JobClient, cmd *cobra.Command, jobName string, history int, start int64, numberOfLines int) (err error) {
-	var jobLog client.JobLog
-	if jobLog, err = jclient.Log(jobName, history, start); err == nil {
-		isNew := false
+var dockerRunOptions DockerRunOptions
 
-		if jobLogOption.LogText != jobLog.Text {
-			jobLogOption.LogText = jobLog.Text
-			isNew = true
-		} else if history == -1 {
-			if build, err := jclient.GetBuild(jobName, -1); err == nil && jobLogOption.LastBuildID != build.Number {
-				jobLogOption.LastBuildID = build.Number
-				jobLogOption.LastBuildURL = build.URL
-				isNew = true
-			}
-		}
-		numberOfLinesOfJobLogText := strings.Count(jobLog.Text, "\n") - 1
-		if isNew && (numberOfLines > 0 || numberOfLines == -1) {
-			if numberOfLines >= numberOfLinesOfJobLogText || numberOfLines == -1 {
-				cmd.Print(jobLog.Text)
-				numberOfLines -= numberOfLinesOfJobLogText
+var dockerRunCmd = &cobra.Command{
+	Use:     "docker run",
+	Short:   i18n.T("Start a container in docker where all upgraded plugins and jenkins run in order to test their eligibility"),
+	Long:    i18n.T("Start a container, where all upgraded plugins and jenkins run, using a image built by Jenkins WAR packager in order to test their eligibility"),
+	PreRunE: dockerRunOptions.CheckImageExistsOrNot,
+	Example: `jcli docker run`,
+	RunE:    dockerRunOptions.PullImageAndRunContainer,
+}
 
-			} else if numberOfLines < numberOfLinesOfJobLogText {
-				text := jobLog.Text
-				for i := 0; i <= numberOfLinesOfJobLogText-numberOfLines; i++ {
-					temp := strings.Index(text, "\n")
-					text = text[temp+1:]
-				}
-				cmd.Print(text)
-				numberOfLines = 0
-			}
-		}
+func (o *DockerRunOptions) GetDockerIPAndPort() string {
+	ip := o.IP
+	port := o.Port
+	return fmt.Sprintf("tcp://%s:%d", ip, port)
+}
 
-		if jobLog.HasMore {
-			err = printLog(jclient, cmd, jobName, history, jobLog.NextStart, numberOfLines)
-		}
+func (o *DockerRunOptions) PullImageAndRunContainer(cmd *cobra.Command, args []string) (err error) {
+	tcp := o.GetDockerIPAndPort()
+	ctx := context.Background()
+	cmd.Println(ctx)
+	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation(), client.WithHost(tcp))
+	if err != nil {
+		cmd.Print("1 ")
+		cmd.Println(err)
+		return err
 	}
-	return
+
+	imageName := o.ImageName + ":" + o.Tag
+
+	out, err := cli.ImagePull(ctx, imageName, types.ImagePullOptions{})
+	if err != nil {
+		cmd.Print("2 " + imageName)
+		cmd.Println(err)
+		return err
+	}
+	outBytes, err := ioutil.ReadAll(out)
+	if err != nil {
+		cmd.Println(err)
+		return err
+	}
+	cmd.Println(outBytes)
+
+	resp, err := cli.ContainerCreate(ctx, &container.Config{
+		Image: imageName,
+	}, nil, nil, nil, "")
+	if err != nil {
+		cmd.Print("3 ")
+		cmd.Println(err)
+		return err
+	}
+
+	if err := cli.ContainerStart(ctx, resp.ID, types.ContainerStartOptions{}); err != nil {
+		cmd.Print("4 ")
+		cmd.Println(err)
+		return err
+	}
+
+	cmd.Println("The container ID is " + resp.ID)
+	return nil
+}
+func (o *DockerRunOptions) CheckImageExistsOrNot(cmd *cobra.Command, args []string) (err error) {
+	ip := fmt.Sprintf("https://index.docker.io/v1/repositories/%s/tags/%s", o.ImageName, o.Tag)
+	resp, err := http.Get(ip)
+	if err != nil {
+		return err
+	}
+	bytes, err := ioutil.ReadAll(resp.Body)
+	if string(bytes) != "" {
+		return err
+	}
+	return nil
 }
