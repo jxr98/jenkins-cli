@@ -18,9 +18,6 @@ const LtsURL = "https://www.jenkins.io/changelog-stable/rss.xml"
 //WidthOfDescription is the width of the description column
 const WidthOfDescription = 60
 
-//NumberOfLinesOfDescription is the number of lines to be printed in description column
-// const NumberOfLinesOfDescription = 10
-
 //ASCIIOfLineFeed is the ASCII of line feed
 const ASCIIOfLineFeed = 10
 
