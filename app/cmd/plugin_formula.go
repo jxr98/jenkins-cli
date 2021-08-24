@@ -1,7 +1,14 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
+	"io/ioutil"
+	"net/http"
+	"sort"
+	"strings"
+
+	"github.com/AlecAivazis/survey/v2"
 	"github.com/jenkins-zh/jenkins-cli/app/cmd/common"
 	"github.com/jenkins-zh/jenkins-cli/app/i18n"
 	"github.com/jenkins-zh/jenkins-cli/client"
@@ -9,10 +16,15 @@ import (
 	cobra_ext "github.com/linuxsuren/cobra-extension"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v2"
-	"net/http"
-	"sort"
-	"strings"
 )
+
+//NewPluginOption consists of four options
+type NewPluginOption struct {
+	Name         string `json:"name"`
+	Version      string `json:"gav"`
+	Date         string `json:"releaseTimestamp"`
+	RequiredCore string `json:"requiredCore"`
+}
 
 // PluginFormulaOption option for plugin formula command
 type PluginFormulaOption struct {
@@ -26,6 +38,7 @@ type PluginFormulaOption struct {
 	RoundTripper http.RoundTripper
 }
 
+var all bool
 var pluginFormulaOption PluginFormulaOption
 
 func init() {
@@ -37,6 +50,7 @@ func init() {
 		`Indicated if build docker image`)
 	flags.BoolVarP(&pluginFormulaOption.SortPlugins, "sort-plugins", "", true,
 		`Indicated if sort the plugins by name`)
+	flags.BoolVarP(&all, "all", "", false, i18n.T("Upgrade jenkins core and all plugins to update"))
 
 	healthCheckRegister.Register(getCmdPath(pluginFormulaCmd), &pluginFormulaOption)
 }
@@ -77,7 +91,7 @@ than you can package the Jenkins distribution by: jcli cwp --config-path test.ya
 			return
 		}
 
-		// make the formula
+		//make the formula
 		formula := jenkinsFormula.CustomWarPackage{
 			Bundle: jenkinsFormula.Bundle{
 				GroupId:     "io.github.jenkins-zh",
@@ -100,18 +114,74 @@ than you can package the Jenkins distribution by: jcli cwp --config-path test.ya
 				},
 			},
 		}
-		if err = jClient.GetPluginsFormula(&formula.Plugins); err == nil {
-			if pluginFormulaOption.OnlyRelease {
-				formula.Plugins = removeSnapshotPlugins(formula.Plugins)
+		if all {
+			if err = jClient.GetPluginsFormula(&formula.Plugins); err == nil {
+				if pluginFormulaOption.OnlyRelease {
+					formula.Plugins = removeSnapshotPluginsAndUpgradeOrNot(formula.Plugins, true)
+				}
+				if pluginFormulaOption.SortPlugins {
+					formula.Plugins = SortPlugins(formula.Plugins)
+				}
+				if items, _, err := GetVersionData(LtsURL); err == nil {
+					formula.War.Source.Version = "\"" + items[0].Title[8:] + "\""
+				}
+
+				var data []byte
+				if data, err = yaml.Marshal(formula); err == nil {
+					_, _ = cmd.OutOrStdout().Write(data)
+				}
+			}
+		} else if !all {
+			//prompt for core
+			var coreTemp bool
+			cmd.Println("1  ")
+			promptCore := &survey.Confirm{
+				Message: fmt.Sprintf("Please indicate whether do you want to upgrade jenkins core or not"),
+			}
+			cmd.Println("2  ")
+			err = survey.AskOne(promptCore, &coreTemp)
+			if err != nil {
+				return err
+			}
+			if coreTemp {
+				if items, _, err := GetVersionData(LtsURL); err == nil {
+					formula.War.Source.Version = "\"" + items[0].Title[8:] + "\""
+				}
 			}
 
-			if pluginFormulaOption.SortPlugins {
-				formula.Plugins = SortPlugins(formula.Plugins)
-			}
+			if err = jClient.GetPluginsFormula(&formula.Plugins); err == nil {
+				if pluginFormulaOption.OnlyRelease {
+					formula.Plugins = removeSnapshotPluginsAndUpgradeOrNot(formula.Plugins, false)
+				}
 
-			var data []byte
-			if data, err = yaml.Marshal(formula); err == nil {
-				_, _ = cmd.OutOrStdout().Write(data)
+				if pluginFormulaOption.SortPlugins {
+					formula.Plugins = SortPlugins(formula.Plugins)
+				}
+
+				prompt := &survey.MultiSelect{
+					Message: fmt.Sprintf("Please select the plugins(%d) which you want to upgrade to the latest: ", len(formula.Plugins)),
+					Options: convertFromFormulaToArray(formula.Plugins),
+				}
+				targetPlugins := make([]string, 0)
+				err = survey.AskOne(prompt, &targetPlugins)
+				if err != nil {
+					return err
+				}
+				tempMap := make(map[string]bool)
+				for _, plugin := range targetPlugins {
+					tempMap[plugin] = true
+				}
+				for index, plugin := range formula.Plugins {
+					if _, exist := tempMap[plugin.ArtifactId]; exist {
+						formula.Plugins[index].Source.Version, _ = getNewVersionOfPlugin(plugin.ArtifactId)
+					}
+				}
+				var data []byte
+				if data, err = yaml.Marshal(formula); err == nil {
+					cmd.Println(data)
+					_, _ = cmd.OutOrStdout().Write(data)
+					// _ = ioutil.WriteFile("test.yaml", data, 0)
+				}
 			}
 		}
 		return
@@ -135,15 +205,52 @@ func SortPlugins(plugins []jenkinsFormula.Plugin) []jenkinsFormula.Plugin {
 	return plugins
 }
 
-func removeSnapshotPlugins(plugins []jenkinsFormula.Plugin) (result []jenkinsFormula.Plugin) {
+func removeSnapshotPluginsAndUpgradeOrNot(plugins []jenkinsFormula.Plugin, allTmp bool) (result []jenkinsFormula.Plugin) {
 	result = make([]jenkinsFormula.Plugin, 0)
-
-	for i := range plugins {
-		if strings.Contains(plugins[i].Source.Version, "SNAPSHOT") {
-			continue
+	if allTmp {
+		for i := range plugins {
+			if strings.Contains(plugins[i].Source.Version, "SNAPSHOT") {
+				continue
+			}
+			plugins[i].Source.Version, _ = getNewVersionOfPlugin(plugins[i].ArtifactId)
+			result = append(result, plugins[i])
 		}
-
-		result = append(result, plugins[i])
+	} else if !allTmp {
+		for i := range plugins {
+			if strings.Contains(plugins[i].Source.Version, "SNAPSHOT") {
+				continue
+			}
+			result = append(result, plugins[i])
+		}
 	}
-	return
+	return result
+}
+
+func getNewVersionOfPlugin(shortName string) (version string, err error) {
+	api := "https://plugins.jenkins.io/api/plugin/" + shortName
+	resp, err := http.Get(api)
+	if err != nil {
+		return "", err
+	}
+	bytes, err := ioutil.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		return "", err
+	}
+	var newPluginOption NewPluginOption
+	err = json.Unmarshal(bytes, &newPluginOption)
+	if err != nil {
+		return "", err
+	}
+	content := newPluginOption.Version
+	startOfVersionNumber := strings.LastIndex(content, ":")
+	version = content[startOfVersionNumber+1:]
+	return version, nil
+}
+
+func convertFromFormulaToArray(plugins []jenkinsFormula.Plugin) (pluginArray []string) {
+	for i, plugin := range plugins {
+		pluginArray[i] = plugin.ArtifactId
+	}
+	return pluginArray
 }

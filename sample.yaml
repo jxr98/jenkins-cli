@@ -1,0 +1,29 @@
+Usage:
+  jcli plugin formula [flags]
+
+Examples:
+Once you generate the formula file by: jcli plugin formula > test.yaml
+than you can package the Jenkins distribution by: jcli cwp --config-path test.yaml
+
+Flags:
+      --docker-build   Indicated if build docker image
+  -h, --help           help for formula
+      --only-release   Indicated that we only output the release version of plugins (default true)
+      --sort-plugins   Indicated if sort the plugins by name (default true)
+
+Global Flags:
+      --config-load                 If load a default config file (default true)
+      --configFile string           An alternative config file
+      --debug                       Print the output into debug.html
+      --doctor                      Run the diagnose for current command
+      --insecureSkipVerify string   If skip insecure skip verify (default "true")
+  -j, --jenkins string              Select a Jenkins server for this time
+      --logger-level string         Logger level which could be: debug, info, warn, error (default "warn")
+      --proxy string                The proxy of connection to Jenkins
+      --proxy-auth string           The auth of proxy of connection to Jenkins
+      --proxy-disable               Disable proxy setting
+      --timeout int                 Timeout in second setting for http request (default 30)
+      --token string                The token of Jenkins
+      --url string                  The URL of Jenkins
+      --username string             The username of Jenkins
+

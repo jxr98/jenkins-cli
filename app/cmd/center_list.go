@@ -43,7 +43,7 @@ type Item struct {
 	PubDate     string `xml:"pubDate"`
 }
 
-var centerListOption CenterListOption
+// var centerListOption CenterListOption
 var numberOfLines int
 
 func init() {
@@ -79,6 +79,7 @@ var centerListCmd = &cobra.Command{
 	},
 }
 
+//GetVersionData fetch the latest jenkins version number
 func GetVersionData(rss string) ([]Item, string, error) {
 	resp, err := http.Get(rss)
 	if err != nil {
