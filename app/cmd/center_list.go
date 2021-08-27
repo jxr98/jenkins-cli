@@ -73,13 +73,14 @@ var centerListCmd = &cobra.Command{
 			return error
 		}
 		jenkinsVersion := status.Version
-		changeLog, err := getChangelog(LtsURL, jenkinsVersion, numberOfLines, getVersionData)
+		changeLog, err := getChangelog(LtsURL, jenkinsVersion, numberOfLines, GetVersionData)
 		cmd.Println(changeLog)
 		return err
 	},
 }
 
-func getVersionData(rss string) ([]Item, string, error) {
+//GetVersionData fetch the latest jenkins version
+func GetVersionData(rss string) ([]Item, string, error) {
 	resp, err := http.Get(rss)
 	if err != nil {
 		return nil, "", err
